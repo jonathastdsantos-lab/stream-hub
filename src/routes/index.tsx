@@ -618,6 +618,16 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
   const [plan, setPlan] = useState("free");
   const [isSavingProfile, setIsSavingProfile] = useState(false);
 
+  // Check for successful OAuth callback redirect and trigger toast + change tab
+  useEffect(() => {
+    const statusToast = localStorage.getItem("oauth_status_toast");
+    if (statusToast === "success_youtube") {
+      localStorage.removeItem("oauth_status_toast");
+      setNav("platforms");
+      toast.success("Canal do YouTube conectado com sucesso! 🎉");
+    }
+  }, []);
+
   // Chat/Alert variables
   const [chatFilter, setChatFilter] = useState<string>("all");
 
@@ -906,6 +916,11 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
     
     try {
       if (isCurrentlyConnected) {
+        if (platform === "youtube") {
+          const confirmDisconnect = window.confirm("Tem certeza de que deseja desconectar a sua conta do YouTube?");
+          if (!confirmDisconnect) return;
+        }
+
         const { error } = await supabase
           .from("platform_connections")
           .delete()
@@ -915,8 +930,21 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
         if (error) throw error;
         
         setConnected((c) => ({ ...c, [platform]: false }));
+        setPlatformDetails((prev) => {
+          const updated = { ...prev };
+          delete updated[platform];
+          return updated;
+        });
         toast.success(`Plataforma ${platform.toUpperCase()} desconectada!`);
       } else {
+        if (platform === "youtube") {
+          toast.loading("Redirecionando para autenticação do Google...");
+          const redirectUri = window.location.origin + "/auth/youtube/callback";
+          const { getGoogleOAuthUrl } = await import("../lib/oauth");
+          window.location.href = getGoogleOAuthUrl(redirectUri);
+          return;
+        }
+
         const dummyKey = `live_${Math.random().toString(36).substring(2, 10)}_${Math.random().toString(36).substring(2, 10)}`;
         const dummyRtmp = `rtmp://rtmp.${platform}.com/live2`;
         const channelName = `${profile?.display_name || user.email?.split("@")[0]} Live`;
