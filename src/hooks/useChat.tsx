@@ -7,9 +7,14 @@ export function useChat(streamId?: string, isLive?: boolean) {
   const {
     messages,
     chatFilter,
+    bannedUsers,
     addMessage,
     setMessages,
     setFilter,
+    banUser,
+    unbanUser,
+    hideMessage,
+    revealMessage,
     clearMessages,
   } = useChatStore();
 
@@ -22,6 +27,31 @@ export function useChat(streamId?: string, isLive?: boolean) {
       case "bits": return "enviou bits!";
       default: return "interagiu!";
     }
+  };
+
+  // Heuristics for spam and links detection
+  const analyzeMessage = (text: string) => {
+    // 1. Link Detection
+    const linkRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|\b[a-zA-Z0-9-]+\.[a-zA-Z]{2,}\b)/gi;
+    const linkAlert = linkRegex.test(text);
+
+    // 2. Spam Detection
+    // A. Shouting (ALL CAPS)
+    const lettersCount = text.replace(/[^a-zA-Z]/g, "").length;
+    const capsCount = text.replace(/[^A-Z]/g, "").length;
+    const isShouting = lettersCount > 6 && (capsCount / lettersCount) > 0.8;
+
+    // B. Character Repetition (e.g. kkkkkkkkkkk, ooooooooo, aaaaaaaaa)
+    const hasRepetitiveText = /(.)\1{8,}/i.test(text);
+
+    // C. Emoji Overload
+    const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{2600}-\u{26FF}]|[\u{1F1E6}-\u{1F1FF}]/gu;
+    const emojisCount = (text.match(emojiRegex) || []).length;
+    const isEmojiSpam = emojisCount > 5;
+
+    const spamAlert = isShouting || hasRepetitiveText || isEmojiSpam;
+
+    return { linkAlert, spamAlert };
   };
 
   // Fetch initial chat logs and subscribe to realtime events
@@ -39,15 +69,23 @@ export function useChat(streamId?: string, isLive?: boolean) {
         .order("created_at", { ascending: true });
 
       if (!error && data) {
-        const msgs: ChatMsg[] = data.map((msg: any) => ({
-          user: msg.username,
-          msg: msg.message,
-          platform: msg.platform as PlatformId,
-          time: new Date(msg.created_at).toLocaleTimeString("pt-BR", {
-            hour: "2-digit",
-            minute: "2-digit",
-          }),
-        }));
+        const msgs: ChatMsg[] = data
+          .filter((msg: any) => !bannedUsers.includes(msg.username.toLowerCase()))
+          .map((msg: any) => {
+            const analysis = analyzeMessage(msg.message);
+            return {
+              id: msg.id,
+              user: msg.username,
+              msg: msg.message,
+              platform: msg.platform as PlatformId,
+              time: new Date(msg.created_at).toLocaleTimeString("pt-BR", {
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+              ...analysis,
+              hidden: false,
+            };
+          });
         setMessages(msgs);
       }
     }
@@ -66,7 +104,15 @@ export function useChat(streamId?: string, isLive?: boolean) {
           filter: `stream_id=eq.${streamId}`,
         },
         (payload: any) => {
+          const userLower = payload.new.username.toLowerCase();
+          // Skip if user is banned
+          if (bannedUsers.includes(userLower)) {
+            return;
+          }
+
+          const analysis = analyzeMessage(payload.new.message);
           const newMsg: ChatMsg = {
+            id: payload.new.id,
             user: payload.new.username,
             msg: payload.new.message,
             platform: payload.new.platform as PlatformId,
@@ -74,8 +120,17 @@ export function useChat(streamId?: string, isLive?: boolean) {
               hour: "2-digit",
               minute: "2-digit",
             }),
+            ...analysis,
+            hidden: false,
           };
           addMessage(newMsg);
+
+          // Trigger basic warning toasts for safety feedback
+          if (analysis.spamAlert) {
+            toast.warning(`[Moderador] Possível SPAM detectado de ${newMsg.user}: "${newMsg.msg.substring(0, 20)}..."`);
+          } else if (analysis.linkAlert) {
+            toast.info(`[Moderador] Mensagem de ${newMsg.user} contém links.`);
+          }
         }
       )
       .subscribe();
@@ -168,7 +223,7 @@ export function useChat(streamId?: string, isLive?: boolean) {
       supabase.removeChannel(chatChannel);
       supabase.removeChannel(alertsChannel);
     };
-  }, [streamId]);
+  }, [streamId, bannedUsers]);
 
   async function sendMessage(text: string, username: string, platform: PlatformId) {
     if (!text.trim()) return;
@@ -227,17 +282,40 @@ export function useChat(streamId?: string, isLive?: boolean) {
     }
   }
 
+  // Double filter: local user filters in case new entries are added
   const filteredChat = messages.filter(
-    (m) => chatFilter === "all" || m.platform === chatFilter
+    (m) =>
+      (chatFilter === "all" || m.platform === chatFilter) &&
+      !bannedUsers.includes(m.user.toLowerCase())
   );
+
+  const triggerBanUser = (username: string) => {
+    banUser(username);
+    toast.error(`Usuário ${username} foi BANIDO e suas mensagens removidas.`);
+  };
+
+  const triggerHideMessage = (msgId: string) => {
+    hideMessage(msgId);
+    toast.info("Mensagem ocultada com sucesso.");
+  };
+
+  const triggerRevealMessage = (msgId: string) => {
+    revealMessage(msgId);
+    toast.success("Mensagem restaurada.");
+  };
 
   return {
     messages: filteredChat,
     allMessages: messages,
     chatFilter,
+    bannedUsers,
     setFilter,
     sendMessage,
     simulateAlert,
+    banUser: triggerBanUser,
+    unbanUser,
+    hideMessage: triggerHideMessage,
+    revealMessage: triggerRevealMessage,
     clearMessages,
   };
 }

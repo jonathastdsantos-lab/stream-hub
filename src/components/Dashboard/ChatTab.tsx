@@ -1,5 +1,5 @@
 import React from "react";
-import { MessageSquare, Send } from "lucide-react";
+import { MessageSquare, Send, EyeOff, Eye, UserX, AlertTriangle, Link } from "lucide-react";
 import { G, PLATFORMS, pColor, PlatformId } from "./constants";
 import { ChatMsg } from "../../lib/stores/chat.store";
 
@@ -13,6 +13,9 @@ interface ChatTabProps {
   sendChat: () => void;
   connected: Record<PlatformId, boolean>;
   chatRef: React.RefObject<HTMLDivElement>;
+  banUser: (username: string) => void;
+  hideMessage: (msgId: string) => void;
+  revealMessage: (msgId: string) => void;
 }
 
 export function ChatTab({
@@ -25,6 +28,9 @@ export function ChatTab({
   sendChat,
   connected,
   chatRef,
+  banUser,
+  hideMessage,
+  revealMessage,
 }: ChatTabProps) {
   const activeConnectedPlatforms = Object.keys(connected).filter(
     (k) => connected[k as PlatformId]
@@ -35,10 +41,10 @@ export function ChatTab({
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12 }}>
         <div>
           <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em" }}>
-            Chat Integrado Multicanais
+            Chat Integrado Multicanais & Moderação
           </h1>
           <p style={{ color: G.muted, fontSize: 13, marginTop: 4 }}>
-            Filtre e responda às mensagens de todos os canais simultaneamente em uma interface expandida.
+            Monitore interações, analise alertas heurísticos de spam e aplique moderações instantâneas nas transmissões ativas.
           </p>
         </div>
         <div style={{ display: "flex", gap: 6, padding: 4, background: "#16161d", borderRadius: 10, border: `1px solid ${G.border}` }}>
@@ -81,26 +87,28 @@ export function ChatTab({
             <div style={{ flex: 1, display: "grid", placeItems: "center", color: G.muted, textAlign: "center" }}>
               <div>
                 <MessageSquare size={48} style={{ color: G.border, marginBottom: 12 }} />
-                <p style={{ fontWeight: 600 }}>Nenhuma mensagem encontrada</p>
-                <p style={{ fontSize: 11, marginTop: 4 }}>Ajuste os filtros ou aguarde novas interações dos espectadores.</p>
+                <p style={{ fontWeight: 600 }}>Nenhuma mensagem ativa</p>
+                <p style={{ fontSize: 11, marginTop: 4 }}>Aguarde novas interações dos espectadores das redes integradas.</p>
               </div>
             </div>
           ) : (
-            filteredChat.map((m, i) => (
+            filteredChat.map((m) => (
               <div
-                key={i}
+                key={m.id}
                 style={{
                   display: "flex",
                   gap: 14,
-                  alignItems: "baseline",
-                  padding: "10px 14px",
+                  alignItems: "center",
+                  padding: "12px 16px",
                   borderRadius: 10,
-                  background: "rgba(28, 28, 36, 0.4)",
-                  border: `1px solid ${G.border}`,
+                  background: m.spamAlert ? "rgba(255, 59, 59, 0.05)" : "rgba(28, 28, 36, 0.4)",
+                  border: `1px solid ${m.spamAlert ? G.live + "44" : G.border}`,
                   animation: "slideIn .25s ease",
                   fontSize: 13.5,
+                  position: "relative",
                 }}
               >
+                {/* Platform Tag */}
                 <span style={{ 
                   color: pColor(m.platform), 
                   fontSize: 10, 
@@ -108,13 +116,104 @@ export function ChatTab({
                   background: `${pColor(m.platform)}18`,
                   padding: "2px 6px",
                   borderRadius: 4,
-                  border: `0.5px solid ${pColor(m.platform)}44`
+                  border: `0.5px solid ${pColor(m.platform)}44`,
+                  flexShrink: 0
                 }}>
                   {PLATFORMS.find((p) => p.id === m.platform)?.icon} {m.platform.toUpperCase()}
                 </span>
-                <span style={{ fontWeight: 800, color: pColor(m.platform) }}>{m.user}</span>
-                <span style={{ color: G.text, flex: 1, lineHeight: 1.5 }}>{m.msg}</span>
-                <span style={{ fontSize: 10, color: G.muted, fontFamily: G.mono }}>{m.time}</span>
+
+                {/* Username */}
+                <span style={{ fontWeight: 800, color: pColor(m.platform), flexShrink: 0 }}>
+                  {m.user}
+                </span>
+
+                {/* Content */}
+                <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {m.spamAlert && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(255,59,59,0.14)", border: `0.5px solid ${G.live}55`, color: G.live, fontSize: 9, fontWeight: 900, textTransform: "uppercase", padding: "2px 6px", borderRadius: 4 }}>
+                      <AlertTriangle size={10} /> SPAM
+                    </span>
+                  )}
+                  {m.linkAlert && (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, background: "rgba(0,176,240,0.14)", border: "0.5px solid rgba(0,176,240,0.4)", color: "#00b0f0", fontSize: 9, fontWeight: 900, textTransform: "uppercase", padding: "2px 6px", borderRadius: 4 }}>
+                      <Link size={10} /> LINK
+                    </span>
+                  )}
+
+                  {m.hidden ? (
+                    <span style={{ color: G.muted, fontStyle: "italic", fontSize: 13 }}>
+                      [Mensagem ocultada por moderação]
+                    </span>
+                  ) : (
+                    <span style={{ color: G.text, lineHeight: 1.5, wordBreak: "break-word" }}>{m.msg}</span>
+                  )}
+                </div>
+
+                {/* Time */}
+                <span style={{ fontSize: 10, color: G.muted, fontFamily: G.mono, marginLeft: 8, flexShrink: 0 }}>
+                  {m.time}
+                </span>
+
+                {/* Moderation actions control buttons */}
+                <div style={{ display: "flex", gap: 6, marginLeft: 12, flexShrink: 0 }}>
+                  {m.hidden ? (
+                    <button
+                      onClick={() => revealMessage(m.id)}
+                      title="Exibir mensagem novamente"
+                      className="glass"
+                      style={{
+                        padding: 6,
+                        borderRadius: 6,
+                        border: `1px solid ${G.accent}44`,
+                        cursor: "pointer",
+                        background: `${G.accent}12`,
+                        display: "grid",
+                        placeItems: "center"
+                      }}
+                    >
+                      <Eye size={12} style={{ color: G.accent }} />
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={() => hideMessage(m.id)}
+                        title="Ocultar mensagem"
+                        className="glass"
+                        style={{
+                          padding: 6,
+                          borderRadius: 6,
+                          border: `1px solid ${G.border}`,
+                          cursor: "pointer",
+                          display: "grid",
+                          placeItems: "center"
+                        }}
+                      >
+                        <EyeOff size={12} style={{ color: G.muted }} />
+                      </button>
+                      <button
+                        onClick={() => {
+                          const confirmBan = window.confirm(`Deseja realmente banir o streamer/espectador ${m.user}? Suas mensagens serão apagadas.`);
+                          if (confirmBan) {
+                            banUser(m.user);
+                          }
+                        }}
+                        title="Banir usuário rapidamente"
+                        className="glass"
+                        style={{
+                          padding: 6,
+                          borderRadius: 6,
+                          border: `1px solid ${G.live}44`,
+                          cursor: "pointer",
+                          background: `${G.live}0d`,
+                          display: "grid",
+                          placeItems: "center"
+                        }}
+                      >
+                        <UserX size={12} style={{ color: G.live }} />
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
             ))
           )}

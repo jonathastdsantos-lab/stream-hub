@@ -122,6 +122,52 @@ export function usePlatforms(userId?: string, displayName?: string, email?: stri
     }
   };
 
+  const reconnectPlatform = async (platform: PlatformId) => {
+    if (!userId) return;
+    setIsLoading(true);
+    try {
+      if (platform === "youtube") {
+        toast.loading("Redirecionando para re-autenticação do YouTube...");
+        const redirectUri = window.location.origin + "/auth/youtube/callback";
+        const { getGoogleOAuthUrl } = await import("../lib/oauth");
+        window.location.href = getGoogleOAuthUrl(redirectUri);
+        return;
+      }
+
+      // Twitch, Kick, TikTok, Facebook: Simulate connection credentials renewal
+      await new Promise((r) => setTimeout(r, 1200));
+
+      const dummyKey = `live_${Math.random().toString(36).substring(2, 10)}_${Math.random().toString(36).substring(2, 10)}`;
+      const dummyRtmp = `rtmp://rtmp.${platform}.com/live2`;
+      const channelName = `${displayName || email?.split("@")[0] || "Streamer"} Live`;
+
+      const { error, data } = await supabase
+        .from("platform_connections")
+        .upsert({
+          user_id: userId,
+          platform: platform,
+          stream_key: dummyKey,
+          rtmp_url: dummyRtmp,
+          channel_name: channelName,
+          channel_id: `ch_${Math.random().toString(36).substring(2, 8)}`,
+          is_active: true,
+          connected_at: new Date().toISOString(),
+        }, { onConflict: "user_id,platform" })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      setConnected((c) => ({ ...c, [platform]: true }));
+      setPlatformDetails((prev) => ({ ...prev, [platform]: data }));
+      toast.success(`Plataforma ${platform.toUpperCase()} reconectada com sucesso!`);
+    } catch (e: any) {
+      toast.error(e.message || `Erro ao reconectar a plataforma ${platform}`);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const connectionsList = Object.keys(connected).map((platformKey) => {
     const details = platformDetails[platformKey as PlatformId];
     return {
@@ -131,6 +177,7 @@ export function usePlatforms(userId?: string, displayName?: string, email?: stri
       is_active: connected[platformKey as PlatformId],
       rtmp_url: details?.rtmp_url,
       stream_key: details?.stream_key,
+      connected_at: details?.connected_at,
     };
   });
 
@@ -139,6 +186,7 @@ export function usePlatforms(userId?: string, displayName?: string, email?: stri
     platformDetails,
     connectionsList,
     togglePlatform,
+    reconnectPlatform,
     refreshPlatforms: loadData,
     isLoading,
   };

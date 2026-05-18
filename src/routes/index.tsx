@@ -329,6 +329,9 @@ function DashboardWrapper() {
     simulateAlert,
     chatFilter,
     setFilter: setChatFilter,
+    banUser,
+    hideMessage,
+    revealMessage,
   } = useChat(currentStream?.id, isLive);
 
   const {
@@ -336,6 +339,7 @@ function DashboardWrapper() {
     platformDetails,
     connectionsList,
     togglePlatform,
+    reconnectPlatform,
   } = usePlatforms(user?.id, profile?.display_name, user?.email);
 
   const [chatMsg, setChatMsg] = useState("");
@@ -661,6 +665,9 @@ function DashboardWrapper() {
         sendChat={triggerSendChat}
         connected={connected}
         chatRef={chatRef}
+        banUser={banUser}
+        hideMessage={hideMessage}
+        revealMessage={revealMessage}
       />
     ),
     platforms: (
@@ -668,6 +675,7 @@ function DashboardWrapper() {
         connected={connected}
         platformDetails={platformDetails}
         togglePlatform={togglePlatform}
+        reconnectPlatform={reconnectPlatform}
       />
     ),
     analytics: (
