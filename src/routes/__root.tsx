@@ -69,20 +69,20 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
   head: () => ({
+    title: "Stream Hub - Multistreaming Platform",
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "Lovable App" },
       { name: "description", content: "Stream Hub is a live streaming platform for creators to broadcast across multiple services." },
-      { name: "author", content: "Lovable" },
-      { property: "og:title", content: "Lovable App" },
+      { name: "author", content: "Stream Hub" },
+      { property: "og:title", content: "Stream Hub - Multistreaming Platform" },
       { property: "og:description", content: "Stream Hub is a live streaming platform for creators to broadcast across multiple services." },
       { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
-      { name: "twitter:site", content: "@Lovable" },
-      { name: "twitter:title", content: "Lovable App" },
-      { name: "twitter:description", content: "Stream Hub is a live streaming platform for creators to broadcast across multiple services." },
       { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/e208ca98-910f-4d3d-9cec-e377a552bf90/id-preview-90b5400f--1b2b02a5-7946-44c3-996b-6a5cd123832a.lovable.app-1779069708616.png" },
+      { name: "twitter:card", content: "summary_large_image" },
+      { name: "twitter:site", content: "@StreamHub" },
+      { name: "twitter:title", content: "Stream Hub - Multistreaming Platform" },
+      { name: "twitter:description", content: "Stream Hub is a live streaming platform for creators to broadcast across multiple services." },
       { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/e208ca98-910f-4d3d-9cec-e377a552bf90/id-preview-90b5400f--1b2b02a5-7946-44c3-996b-6a5cd123832a.lovable.app-1779069708616.png" },
     ],
     links: [
