@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "../lib/supabase";
 import { User } from "@supabase/supabase-js";
+import { RtmpKeyManager } from "../components/RtmpKeyManager";
 import { Toaster, toast } from "sonner";
 import { 
   Tv, 
@@ -1107,6 +1108,18 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
     { name: "Atual", viewers: viewers > 0 ? viewers : 0, chatMsgs: chatLog.length },
   ];
 
+  const connectionsList = Object.keys(connected).map((platformKey) => {
+    const details = platformDetails[platformKey as PlatformId];
+    return {
+      id: details?.id || platformKey,
+      platform: platformKey,
+      channel_name: details?.channel_name || `${profile?.display_name || user.email?.split("@")[0]} Live`,
+      is_active: connected[platformKey as PlatformId],
+      rtmp_url: details?.rtmp_url,
+      stream_key: details?.stream_key,
+    };
+  });
+
   const panels: Record<string, React.ReactNode> = {
     dashboard: (
       <div style={{ display: "flex", flexDirection: "column", gap: 24, animation: "fadeIn .4s ease" }}>
@@ -1321,7 +1334,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
     ),
 
     stream: (
-      <div style={{ display: "flex", flexDirection: "column", gap: 24, animation: "fadeIn .4s ease" }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 28, animation: "fadeIn .4s ease" }}>
         <div>
           <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: "-0.03em" }}>
             Transmissão de Vídeo (Console OBS / Streamlabs)
@@ -1498,6 +1511,14 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
               </div>
             </div>
           </div>
+        </div>
+
+        <div style={{ borderTop: `1px solid ${G.border}`, paddingTop: 28 }}>
+          <RtmpKeyManager
+            userId={user.id}
+            supabaseClient={supabase}
+            connections={connectionsList}
+          />
         </div>
       </div>
     ),
