@@ -1,66 +1,26 @@
-/**
- * @file index.ts
- * @description Barrel de exportação de todos os Zustand stores.
- *
- * Importe stores e tipos a partir deste arquivo:
- * @example
- * import { useAuthStore, useChatStore, type User } from '@/lib/stores';
- */
+// ─────────────────────────────────────────────
+// StreamHub — Zustand Stores
+// Central export barrel. Import from here everywhere.
+//
+// Usage:
+//   import { useAuthStore, useStreamStore } from '@/lib/stores'
+// ─────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Auth Store — sessão, usuário e tokens JWT
-// ---------------------------------------------------------------------------
-export {
-  useAuthStore,
-  type User,
-  type AuthTokens,
-  type AuthStatus,
-  type AuthState,
-} from './auth.store';
+// Auth — Supabase session, login, signup, logout
+export { useAuthStore, setupAuthListener } from './auth.store'
 
-// ---------------------------------------------------------------------------
-// Stream Store — controle de SSE / streaming token-by-token
-// ---------------------------------------------------------------------------
-export {
-  useStreamStore,
-  type StreamChunk,
-  type StreamStatus,
-  type StreamState,
-} from './stream.store';
+// Stream — current stream lifecycle + realtime viewer count
+export { useStreamStore } from './stream.store'
+export type { Stream } from './stream.store'
 
-// ---------------------------------------------------------------------------
-// Chat Store — conversas e mensagens
-// ---------------------------------------------------------------------------
-export {
-  useChatStore,
-  type Message,
-  type MessageRole,
-  type MessageStatus,
-  type Conversation,
-  type ChatState,
-} from './chat.store';
+// Chat — messages list, platform filter, realtime subscription
+export { useChatStore } from './chat.store'
+export type { Message } from './chat.store'
 
-// ---------------------------------------------------------------------------
-// Platform Store — provedores de IA, modelos e configurações
-// ---------------------------------------------------------------------------
-export {
-  usePlatformStore,
-  type Platform,
-  type PlatformProvider,
-  type PlatformSettings,
-  type ModelConfig,
-  type PlatformState,
-} from './platform.store';
+// Platforms — connected platform accounts (YouTube, Twitch, etc.)
+export { usePlatformStore } from './platform.store'
+export type { PlatformConnection } from './platform.store'
 
-// ---------------------------------------------------------------------------
-// UI Store — tema, layout, modais e toasts
-// ---------------------------------------------------------------------------
-export {
-  useUIStore,
-  type Theme,
-  type SidebarPosition,
-  type Toast,
-  type ToastVariant,
-  type ModalState,
-  type UIState,
-} from './ui.store';
+// UI — tabs, modals, toast notifications
+export { useUIStore, notify } from './ui.store'
+export type { ActiveTab, Notification, NotificationType } from './ui.store'

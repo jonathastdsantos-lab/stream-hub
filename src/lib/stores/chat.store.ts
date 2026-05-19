@@ -1,286 +1,161 @@
-/**
- * @file chat.store.ts
- * @description Store principal do chat — gerencia conversas, mensagens,
- * histórico e estado de envio.
- */
+import { create } from 'zustand'
+import { supabase } from '@/lib/supabase'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 
-import { create } from 'zustand';
-import { devtools, persist } from 'zustand/middleware';
-
-// ---------------------------------------------------------------------------
-// Tipos
-// ---------------------------------------------------------------------------
-
-export type MessageRole = 'user' | 'assistant' | 'system';
-
-export type MessageStatus = 'sending' | 'sent' | 'streaming' | 'error';
+// ─────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────
 
 export interface Message {
-  id: string;
-  conversationId: string;
-  role: MessageRole;
-  content: string;
-  status: MessageStatus;
-  createdAt: string;
-  /** Metadados opcionais (ex: tokens usados, modelo) */
-  metadata?: Record<string, unknown>;
+  id: string
+  streamId: string
+  platform: 'youtube' | 'twitch' | 'tiktok' | 'facebook' | 'kick'
+  username: string
+  message: string
+  userColor?: string
+  isMod: boolean
+  createdAt: string
 }
 
-export interface Conversation {
-  id: string;
-  title: string;
-  /** ID do modelo/plataforma utilizado */
-  platformId: string;
-  messages: Message[];
-  createdAt: string;
-  updatedAt: string;
-  /** Indica se a conversa está arquivada */
-  archived: boolean;
+type PlatformFilter = 'all' | 'youtube' | 'twitch' | 'tiktok' | 'facebook' | 'kick'
+
+const MAX_MESSAGES = 50 // Max messages kept in memory
+
+interface ChatState {
+  messages: Message[]
+  filter: PlatformFilter
+  isLoading: boolean
+  autoScroll: boolean
+  _realtimeChannel: RealtimeChannel | null
 }
 
-export interface ChatState {
-  // --- Estado ---
-  conversations: Record<string, Conversation>;
-  activeConversationId: string | null;
-  isLoading: boolean;
-  error: string | null;
-
-  // --- Ações: Conversas ---
-  createConversation: (platformId: string, title?: string) => string;
-  setActiveConversation: (id: string) => void;
-  updateConversationTitle: (id: string, title: string) => void;
-  archiveConversation: (id: string) => void;
-  deleteConversation: (id: string) => void;
-
-  // --- Ações: Mensagens ---
-  addMessage: (conversationId: string, message: Omit<Message, 'conversationId'>) => void;
-  updateMessage: (conversationId: string, messageId: string, patch: Partial<Message>) => void;
-  appendToMessage: (conversationId: string, messageId: string, delta: string) => void;
-
-  // --- Ações: UI ---
-  setLoading: (loading: boolean) => void;
-  setError: (error: string | null) => void;
-
-  // --- Seletores computados ---
-  getActiveConversation: () => Conversation | null;
-  getConversationMessages: (id: string) => Message[];
-  getConversationList: () => Conversation[];
+interface ChatActions {
+  addMessage: (message: Message) => void
+  deleteMessage: (messageId: string) => void
+  setFilter: (filter: PlatformFilter) => void
+  clearMessages: () => void
+  setMessages: (messages: Message[]) => void
+  prependMessages: (messages: Message[]) => void
+  setAutoScroll: (enabled: boolean) => void
+  subscribeToChat: (streamId: string) => void
+  unsubscribeFromChat: () => void
+  getFilteredMessages: () => Message[]
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+type ChatStore = ChatState & ChatActions
 
-const generateId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-
-const now = () => new Date().toISOString();
-
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────
 // Store
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────
 
-export const useChatStore = create<ChatState>()(
-  devtools(
-    persist(
-      (set, get) => ({
-        // Estado inicial
-        conversations: {},
-        activeConversationId: null,
-        isLoading: false,
-        error: null,
+export const useChatStore = create<ChatStore>()((set, get) => ({
+  // ── Initial State ────────────────────────
+  messages: [],
+  filter: 'all',
+  isLoading: false,
+  autoScroll: true,
+  _realtimeChannel: null,
 
-        // ---------------------------------------------------------------
-        // Conversas
-        // ---------------------------------------------------------------
+  // ── Add Message ──────────────────────────
+  // Appends a message and trims the list to MAX_MESSAGES
+  addMessage: (message) => {
+    set((state) => {
+      const updated = [...state.messages, message]
+      // Keep only the last MAX_MESSAGES to avoid memory bloat
+      return { messages: updated.slice(-MAX_MESSAGES) }
+    })
+  },
 
-        /**
-         * Cria uma nova conversa e a define como ativa.
-         * Retorna o ID da nova conversa.
-         */
-        createConversation: (platformId, title = 'Nova conversa') => {
-          const id = generateId();
-          const conversation: Conversation = {
-            id,
-            title,
-            platformId,
-            messages: [],
-            createdAt: now(),
-            updatedAt: now(),
-            archived: false,
-          };
+  // ── Delete Message ───────────────────────
+  deleteMessage: (messageId) => {
+    set((state) => ({
+      messages: state.messages.filter((m) => m.id !== messageId),
+    }))
+  },
 
-          set(
-            (state) => ({
-              conversations: { ...state.conversations, [id]: conversation },
-              activeConversationId: id,
-            }),
-            false,
-            'chat/createConversation',
-          );
+  // ── Set Filter ───────────────────────────
+  setFilter: (filter) => set({ filter }),
 
-          return id;
+  // ── Clear All ────────────────────────────
+  clearMessages: () => set({ messages: [] }),
+
+  // ── Replace All ──────────────────────────
+  // Used for initial load — replaces the full list
+  setMessages: (messages) => set({ messages: messages.slice(-MAX_MESSAGES) }),
+
+  // ── Prepend (History) ────────────────────
+  // Prepends older messages (e.g. on scroll-up pagination)
+  prependMessages: (messages) => {
+    set((state) => {
+      const combined = [...messages, ...state.messages]
+      return { messages: combined.slice(-MAX_MESSAGES) }
+    })
+  },
+
+  // ── Auto-scroll ──────────────────────────
+  setAutoScroll: (autoScroll) => set({ autoScroll }),
+
+  // ── Derived: Filtered Messages ───────────
+  // Returns messages matching the current platform filter
+  getFilteredMessages: () => {
+    const { messages, filter } = get()
+    if (filter === 'all') return messages
+    return messages.filter((m) => m.platform === filter)
+  },
+
+  // ── Realtime Subscription ─────────────────
+  // Listens for new chat_messages on a specific stream
+  subscribeToChat: (streamId) => {
+    get().unsubscribeFromChat() // Clean up previous
+
+    const channel = supabase
+      .channel(`chat:${streamId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `stream_id=eq.${streamId}`,
         },
-
-        /** Define qual conversa está ativa no momento */
-        setActiveConversation: (id) =>
-          set({ activeConversationId: id }, false, 'chat/setActive'),
-
-        /** Renomeia uma conversa */
-        updateConversationTitle: (id, title) =>
-          set(
-            (state) => ({
-              conversations: {
-                ...state.conversations,
-                [id]: { ...state.conversations[id], title, updatedAt: now() },
-              },
-            }),
-            false,
-            'chat/renameConversation',
-          ),
-
-        /** Arquiva (oculta) uma conversa sem deletá-la */
-        archiveConversation: (id) =>
-          set(
-            (state) => ({
-              conversations: {
-                ...state.conversations,
-                [id]: { ...state.conversations[id], archived: true, updatedAt: now() },
-              },
-            }),
-            false,
-            'chat/archiveConversation',
-          ),
-
-        /** Remove permanentemente uma conversa */
-        deleteConversation: (id) => {
-          set(
-            (state) => {
-              const { [id]: _removed, ...rest } = state.conversations;
-              return {
-                conversations: rest,
-                activeConversationId:
-                  state.activeConversationId === id ? null : state.activeConversationId,
-              };
-            },
-            false,
-            'chat/deleteConversation',
-          );
+        (payload) => {
+          const row = payload.new as Record<string, unknown>
+          const msg: Message = {
+            id: row.id as string,
+            streamId: row.stream_id as string,
+            platform: row.platform as Message['platform'],
+            username: row.username as string,
+            message: row.message as string,
+            userColor: row.user_color as string | undefined,
+            isMod: row.is_mod as boolean,
+            createdAt: row.created_at as string,
+          }
+          get().addMessage(msg)
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'DELETE',
+          schema: 'public',
+          table: 'chat_messages',
+          filter: `stream_id=eq.${streamId}`,
         },
+        (payload) => {
+          const row = payload.old as Record<string, unknown>
+          get().deleteMessage(row.id as string)
+        }
+      )
+      .subscribe()
 
-        // ---------------------------------------------------------------
-        // Mensagens
-        // ---------------------------------------------------------------
+    set({ _realtimeChannel: channel })
+  },
 
-        /**
-         * Adiciona uma mensagem a uma conversa específica.
-         */
-        addMessage: (conversationId, message) =>
-          set(
-            (state) => {
-              const conv = state.conversations[conversationId];
-              if (!conv) return state;
-
-              const fullMessage: Message = { ...message, conversationId };
-              return {
-                conversations: {
-                  ...state.conversations,
-                  [conversationId]: {
-                    ...conv,
-                    messages: [...conv.messages, fullMessage],
-                    updatedAt: now(),
-                  },
-                },
-              };
-            },
-            false,
-            'chat/addMessage',
-          ),
-
-        /**
-         * Atualiza campos de uma mensagem existente (ex: status, content).
-         */
-        updateMessage: (conversationId, messageId, patch) =>
-          set(
-            (state) => {
-              const conv = state.conversations[conversationId];
-              if (!conv) return state;
-
-              return {
-                conversations: {
-                  ...state.conversations,
-                  [conversationId]: {
-                    ...conv,
-                    messages: conv.messages.map((m) =>
-                      m.id === messageId ? { ...m, ...patch } : m,
-                    ),
-                    updatedAt: now(),
-                  },
-                },
-              };
-            },
-            false,
-            'chat/updateMessage',
-          ),
-
-        /**
-         * Acrescenta texto incremental (delta) ao conteúdo de uma mensagem.
-         * Usado durante streaming token-by-token.
-         */
-        appendToMessage: (conversationId, messageId, delta) =>
-          set(
-            (state) => {
-              const conv = state.conversations[conversationId];
-              if (!conv) return state;
-
-              return {
-                conversations: {
-                  ...state.conversations,
-                  [conversationId]: {
-                    ...conv,
-                    messages: conv.messages.map((m) =>
-                      m.id === messageId ? { ...m, content: m.content + delta } : m,
-                    ),
-                  },
-                },
-              };
-            },
-            false,
-            'chat/appendToMessage',
-          ),
-
-        // ---------------------------------------------------------------
-        // UI
-        // ---------------------------------------------------------------
-
-        setLoading: (isLoading) => set({ isLoading }, false, 'chat/setLoading'),
-
-        setError: (error) => set({ error }, false, 'chat/setError'),
-
-        // ---------------------------------------------------------------
-        // Seletores
-        // ---------------------------------------------------------------
-
-        /** Retorna a conversa ativa ou null */
-        getActiveConversation: () => {
-          const { conversations, activeConversationId } = get();
-          return activeConversationId ? (conversations[activeConversationId] ?? null) : null;
-        },
-
-        /** Retorna mensagens de uma conversa específica */
-        getConversationMessages: (id) => get().conversations[id]?.messages ?? [],
-
-        /** Lista conversas não arquivadas, ordenadas pela mais recente */
-        getConversationList: () =>
-          Object.values(get().conversations)
-            .filter((c) => !c.archived)
-            .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
-      }),
-      {
-        name: 'chat-storage',
-        // Persiste apenas conversas (evita manter estado de UI)
-        partialize: (state) => ({ conversations: state.conversations }),
-      },
-    ),
-    { name: 'ChatStore' },
-  ),
-);
+  unsubscribeFromChat: () => {
+    const { _realtimeChannel } = get()
+    if (_realtimeChannel) {
+      supabase.removeChannel(_realtimeChannel)
+      set({ _realtimeChannel: null })
+    }
+  },
+}))

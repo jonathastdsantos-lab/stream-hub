@@ -1,123 +1,144 @@
-/**
- * @file auth.store.ts
- * @description Store de autenticação — gerencia sessão do usuário,
- * tokens JWT, perfil e estado de login/logout.
- */
+import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+import { supabase } from '@/lib/supabase'
+import type { User } from '@supabase/supabase-js'
 
-import { create } from 'zustand';
-import { devtools, persist } from 'zustand/middleware';
+// ─────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Tipos
-// ---------------------------------------------------------------------------
-
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  avatarUrl?: string;
-  role: 'admin' | 'user' | 'guest';
-  createdAt: string;
+interface AuthState {
+  user: User | null
+  isLoading: boolean
+  error: string | null
 }
 
-export interface AuthTokens {
-  accessToken: string;
-  refreshToken: string;
-  /** Timestamp (ms) de expiração do accessToken */
-  expiresAt: number;
+interface AuthActions {
+  setUser: (user: User | null) => void
+  setLoading: (loading: boolean) => void
+  setError: (error: string | null) => void
+  login: (email: string, password: string) => Promise<void>
+  signup: (email: string, password: string, username: string, displayName: string) => Promise<void>
+  logout: () => Promise<void>
+  getUser: () => Promise<void>
 }
 
-export type AuthStatus = 'idle' | 'loading' | 'authenticated' | 'unauthenticated' | 'error';
+type AuthStore = AuthState & AuthActions
 
-export interface AuthState {
-  // --- Estado ---
-  user: User | null;
-  tokens: AuthTokens | null;
-  status: AuthStatus;
-  error: string | null;
-
-  // --- Ações ---
-  setUser: (user: User) => void;
-  setTokens: (tokens: AuthTokens) => void;
-  setStatus: (status: AuthStatus) => void;
-  setError: (error: string | null) => void;
-  login: (user: User, tokens: AuthTokens) => void;
-  logout: () => void;
-  refreshSession: (tokens: AuthTokens) => void;
-
-  // --- Seletores computados ---
-  isAuthenticated: () => boolean;
-  isTokenExpired: () => boolean;
-}
-
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────
 // Store
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────
 
-export const useAuthStore = create<AuthState>()(
-  devtools(
-    persist(
-      (set, get) => ({
-        // Estado inicial
-        user: null,
-        tokens: null,
-        status: 'idle',
-        error: null,
+export const useAuthStore = create<AuthStore>()(
+  persist(
+    (set, get) => ({
+      // ── Initial State ──────────────────────
+      user: null,
+      isLoading: false,
+      error: null,
 
-        // Atualiza apenas o usuário
-        setUser: (user) => set({ user }, false, 'auth/setUser'),
+      // ── Primitive Setters ──────────────────
+      setUser: (user) => set({ user }),
+      setLoading: (isLoading) => set({ isLoading }),
+      setError: (error) => set({ error }),
 
-        // Atualiza apenas os tokens
-        setTokens: (tokens) => set({ tokens }, false, 'auth/setTokens'),
-
-        // Atualiza o status da autenticação
-        setStatus: (status) => set({ status }, false, 'auth/setStatus'),
-
-        // Define mensagem de erro (null para limpar)
-        setError: (error) => set({ error }, false, 'auth/setError'),
-
-        /**
-         * Login completo: persiste usuário + tokens e marca como autenticado.
-         */
-        login: (user, tokens) =>
-          set(
-            { user, tokens, status: 'authenticated', error: null },
-            false,
-            'auth/login',
-          ),
-
-        /**
-         * Logout: limpa todos os dados sensíveis.
-         */
-        logout: () =>
-          set(
-            { user: null, tokens: null, status: 'unauthenticated', error: null },
-            false,
-            'auth/logout',
-          ),
-
-        /**
-         * Atualiza tokens após refresh sem alterar o usuário.
-         */
-        refreshSession: (tokens) =>
-          set({ tokens, status: 'authenticated' }, false, 'auth/refreshSession'),
-
-        // Verifica se há usuário autenticado
-        isAuthenticated: () => get().status === 'authenticated' && get().user !== null,
-
-        // Verifica se o accessToken expirou
-        isTokenExpired: () => {
-          const { tokens } = get();
-          if (!tokens) return true;
-          return Date.now() >= tokens.expiresAt;
-        },
-      }),
-      {
-        name: 'auth-storage', // chave no localStorage
-        // Persiste apenas dados não sensíveis (tokens ficam em memória)
-        partialize: (state) => ({ user: state.user, status: state.status }),
+      // ── Login ──────────────────────────────
+      // Signs in with email/password via Supabase Auth
+      login: async (email, password) => {
+        set({ isLoading: true, error: null })
+        try {
+          const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+          if (error) throw error
+          set({ user: data.user })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Erro ao fazer login'
+          set({ error: message })
+          throw err
+        } finally {
+          set({ isLoading: false })
+        }
       },
-    ),
-    { name: 'AuthStore' },
-  ),
-);
+
+      // ── Signup ─────────────────────────────
+      // Creates account and inserts profile row
+      signup: async (email, password, username, displayName) => {
+        set({ isLoading: true, error: null })
+        try {
+          const { data, error } = await supabase.auth.signUp({
+            email,
+            password,
+            options: {
+              data: { username, display_name: displayName },
+            },
+          })
+          if (error) throw error
+
+          // Insert into public profiles table (if you have one)
+          if (data.user) {
+            await supabase.from('profiles').upsert({
+              id: data.user.id,
+              username,
+              display_name: displayName,
+              email,
+            })
+          }
+
+          set({ user: data.user })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Erro ao criar conta'
+          set({ error: message })
+          throw err
+        } finally {
+          set({ isLoading: false })
+        }
+      },
+
+      // ── Logout ─────────────────────────────
+      logout: async () => {
+        set({ isLoading: true, error: null })
+        try {
+          const { error } = await supabase.auth.signOut()
+          if (error) throw error
+          set({ user: null })
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Erro ao fazer logout'
+          set({ error: message })
+        } finally {
+          set({ isLoading: false })
+        }
+      },
+
+      // ── Get User ───────────────────────────
+      // Rehydrates session from Supabase on app init
+      getUser: async () => {
+        set({ isLoading: true, error: null })
+        try {
+          const { data, error } = await supabase.auth.getUser()
+          if (error) throw error
+          set({ user: data.user })
+        } catch {
+          // Silent fail — user simply isn't logged in
+          set({ user: null })
+        } finally {
+          set({ isLoading: false })
+        }
+      },
+    }),
+    {
+      name: 'streamhub-auth', // localStorage key
+      partialize: (state) => ({ user: state.user }), // Only persist user, not loading/error
+    }
+  )
+)
+
+// ─────────────────────────────────────────────
+// Auth state listener (call once in app root)
+// ─────────────────────────────────────────────
+// Usage: setupAuthListener() inside useEffect in App.tsx
+export function setupAuthListener() {
+  const { setUser } = useAuthStore.getState()
+  const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+    setUser(session?.user ?? null)
+  })
+  return data.subscription
+}
