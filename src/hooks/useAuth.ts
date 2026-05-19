@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { supabase } from '../lib/supabase';
 
 interface User {
   id: string;
@@ -50,6 +51,32 @@ export function useAuth() {
     } else {
       setState(prev => ({ ...prev, isLoading: false }));
     }
+
+    // Ouvinte em tempo real do Supabase para capturar redirecionamentos de login social (Google)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (session && session.user) {
+        const token = session.access_token;
+        const user: User = {
+          id: session.user.id,
+          email: session.user.email || "",
+          name: session.user.user_metadata.full_name || session.user.email?.split('@')[0] || "Streamer",
+          avatar: session.user.user_metadata.avatar_url,
+          role: 'streamer',
+          createdAt: session.user.created_at,
+        };
+        localStorage.setItem('auth_token', token);
+        localStorage.setItem('auth_user', JSON.stringify(user));
+        setState({ user, token, isAuthenticated: true, isLoading: false, error: null });
+      } else if (event === 'SIGNED_OUT') {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        setState({ user: null, token: null, isAuthenticated: false, isLoading: false, error: null });
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   const login = useCallback(async (credentials: LoginCredentials) => {
@@ -115,6 +142,24 @@ export function useAuth() {
     });
   }, []);
 
+  const signInWithGoogle = useCallback(async () => {
+    setState(prev => ({ ...prev, isLoading: true, error: null }));
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+        },
+      });
+      if (error) throw error;
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Google login failed';
+      setState(prev => ({ ...prev, isLoading: false, error: message }));
+      return { success: false, error: message };
+    }
+  }, []);
+
   const clearError = useCallback(() => {
     setState(prev => ({ ...prev, error: null }));
   }, []);
@@ -126,5 +171,6 @@ export function useAuth() {
     logout,
     updateUser,
     clearError,
+    signInWithGoogle,
   };
 }

@@ -89,7 +89,7 @@ const StatCard = ({
 );
 
 function AuthPage() {
-  const { login, register, isLoading, error } = useAuth();
+  const { login, register, signInWithGoogle, isLoading, error } = useAuth();
   const [tab, setTab] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -299,6 +299,55 @@ function AuthPage() {
             ) : (
               <>Criar Canal Agora</>
             )}
+          </button>
+
+          <div style={{ display: "flex", alignItems: "center", margin: "8px 0", color: G.muted }}>
+            <hr style={{ flex: 1, border: "none", borderTop: `1px solid ${G.border}`, marginRight: 10 }} />
+            <span style={{ fontSize: 11, fontWeight: 600 }}>OU</span>
+            <hr style={{ flex: 1, border: "none", borderTop: `1px solid ${G.border}`, marginLeft: 10 }} />
+          </div>
+
+          <button
+            type="button"
+            onClick={async () => {
+              const res = await signInWithGoogle();
+              if (res && !res.success) {
+                toast.error(res.error || "Falha ao conectar com o Google");
+              }
+            }}
+            style={{
+              ...btn(false),
+              background: "#ffffff",
+              color: "#16161d",
+              border: "1px solid #e5e7eb",
+              transition: "transform .1s, background-color .15s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.backgroundColor = "#f3f4f6";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.backgroundColor = "#ffffff";
+            }}
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" style={{ marginRight: 2 }}>
+              <path
+                fill="#4285F4"
+                d="M17.64 9.2c0-.63-.06-1.25-.16-1.84H9v3.47h4.84c-.21 1.12-.84 2.07-1.79 2.7v2.24h2.9c1.69-1.55 2.69-3.85 2.69-6.57z"
+              />
+              <path
+                fill="#34A853"
+                d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.9-2.24c-.8.54-1.84.87-3.06.87-2.35 0-4.34-1.58-5.05-3.71H.95v2.3C2.43 15.89 5.5 18 9 18z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M3.95 10.74c-.18-.54-.28-1.12-.28-1.74s.1-1.2.28-1.74V4.96H.95C.35 6.17 0 7.55 0 9s.35 2.83.95 4.04l3-2.3z"
+              />
+              <path
+                fill="#EA4335"
+                d="M9 3.58c1.32 0 2.5.45 3.44 1.35L15 2.4C13.46.99 11.42 0 9 0 5.5 0 2.43 2.11.95 4.96l3 2.3c.71-2.13 2.7-3.68 5.05-3.68z"
+              />
+            </svg>
+            Acessar com o Google
           </button>
         </div>
 
