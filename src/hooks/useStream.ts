@@ -1,153 +1,212 @@
-import { useEffect } from "react";
-import { supabase } from "../lib/supabase";
-import { useStreamStore } from "../lib/stores/stream.store";
-import { toast } from "sonner";
+import { useState, useEffect, useRef, useCallback } from 'react';
 
-export function useStream(userId?: string) {
-  const {
-    currentStream,
-    isLive,
-    viewers,
-    duration,
-    streamHistory,
-    setStream,
-    setLive,
-    setViewers,
-    setDuration,
-    setStreamHistory,
-    clearStream,
-  } = useStreamStore();
+export type StreamStatus = 'idle' | 'connecting' | 'live' | 'paused' | 'ended' | 'error';
 
-  // 1. Initial active stream recovery check
-  useEffect(() => {
-    if (!userId) return;
+interface StreamConfig {
+  title: string;
+  description?: string;
+  category?: string;
+  tags?: string[];
+  isPrivate?: boolean;
+}
 
-    async function recoveryActiveStream() {
-      const { data: streams, error: streamErr } = await supabase
-        .from("streams")
-        .select("*")
-        .eq("user_id", userId)
-        .eq("status", "live")
-        .order("created_at", { ascending: false })
-        .limit(1);
+interface StreamStats {
+  viewers: number;
+  peakViewers: number;
+  duration: number;
+  bitrate: number;
+  fps: number;
+  resolution: string;
+  droppedFrames: number;
+}
 
-      if (!streamErr && streams && streams.length > 0) {
-        const stream = streams[0];
-        setStream(stream);
-        setLive(true);
-        setViewers(stream.peak_viewers || 15);
-        const start = new Date(stream.started_at).getTime();
-        setDuration(Math.floor((Date.now() - start) / 1000));
+interface StreamState {
+  status: StreamStatus;
+  streamId: string | null;
+  streamKey: string | null;
+  rtmpUrl: string | null;
+  config: StreamConfig | null;
+  stats: StreamStats;
+  error: string | null;
+  startedAt: Date | null;
+}
+
+const DEFAULT_STATS: StreamStats = {
+  viewers: 0,
+  peakViewers: 0,
+  duration: 0,
+  bitrate: 0,
+  fps: 0,
+  resolution: '1920x1080',
+  droppedFrames: 0,
+};
+
+export function useStream() {
+  const [state, setState] = useState<StreamState>({
+    status: 'idle',
+    streamId: null,
+    streamKey: null,
+    rtmpUrl: null,
+    config: null,
+    stats: DEFAULT_STATS,
+    error: null,
+    startedAt: null,
+  });
+
+  const statsIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const durationIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchStats = useCallback(async (streamId: string) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch(`/api/streams/${streamId}/stats`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const stats = await res.json();
+        setState(prev => ({
+          ...prev,
+          stats: { ...prev.stats, ...stats },
+        }));
       }
+    } catch {
+      // silent fail for stats
     }
+  }, []);
 
-    recoveryActiveStream();
-  }, [userId]);
+  const startStream = useCallback(async (config: StreamConfig) => {
+    setState(prev => ({ ...prev, status: 'connecting', error: null }));
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch('/api/streams/start', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(config),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || 'Failed to start stream');
+      }
+      const { streamId, streamKey, rtmpUrl } = await res.json();
+      const startedAt = new Date();
 
-  // 2. Load stream history
-  async function loadStreamHistory() {
-    if (!userId) return;
-    const { data, error } = await supabase
-      .from("streams")
-      .select("*")
-      .eq("user_id", userId)
-      .eq("status", "ended")
-      .order("created_at", { descending: true });
+      setState(prev => ({
+        ...prev,
+        status: 'live',
+        streamId,
+        streamKey,
+        rtmpUrl,
+        config,
+        startedAt,
+        stats: DEFAULT_STATS,
+      }));
 
-    if (!error && data) {
-      setStreamHistory(data);
-    }
-  }
-
-  // Load history initially and when live status changes
-  useEffect(() => {
-    if (userId) {
-      loadStreamHistory();
-    }
-  }, [userId, isLive]);
-
-  // 3. Live session duration and viewer counter simulation
-  useEffect(() => {
-    let timer: ReturnType<typeof setInterval> | undefined;
-    if (isLive && currentStream) {
-      timer = setInterval(() => {
-        setDuration((d) => d + 1);
-        setViewers((v) => Math.max(5, v + Math.floor(Math.random() * 11) - 5));
+      statsIntervalRef.current = setInterval(() => fetchStats(streamId), 5000);
+      durationIntervalRef.current = setInterval(() => {
+        setState(prev => ({
+          ...prev,
+          stats: {
+            ...prev.stats,
+            duration: Math.floor((Date.now() - startedAt.getTime()) / 1000),
+          },
+        }));
       }, 1000);
-    } else {
-      setDuration(0);
-      setViewers(0);
+
+      return { success: true, streamId };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to start stream';
+      setState(prev => ({ ...prev, status: 'error', error: message }));
+      return { success: false, error: message };
     }
+  }, [fetchStats]);
+
+  const endStream = useCallback(async () => {
+    const { streamId } = state;
+    if (!streamId) return;
+
+    if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+    if (durationIntervalRef.current) clearInterval(durationIntervalRef.current);
+
+    try {
+      const token = localStorage.getItem('auth_token');
+      await fetch(`/api/streams/${streamId}/end`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // proceed regardless
+    }
+
+    setState(prev => ({
+      ...prev,
+      status: 'ended',
+      streamKey: null,
+      rtmpUrl: null,
+    }));
+  }, [state]);
+
+  const pauseStream = useCallback(async () => {
+    const { streamId } = state;
+    if (!streamId) return;
+    try {
+      const token = localStorage.getItem('auth_token');
+      await fetch(`/api/streams/${streamId}/pause`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setState(prev => ({ ...prev, status: 'paused' }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to pause';
+      setState(prev => ({ ...prev, error: message }));
+    }
+  }, [state]);
+
+  const resumeStream = useCallback(async () => {
+    const { streamId } = state;
+    if (!streamId) return;
+    try {
+      const token = localStorage.getItem('auth_token');
+      await fetch(`/api/streams/${streamId}/resume`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setState(prev => ({ ...prev, status: 'live' }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to resume';
+      setState(prev => ({ ...prev, error: message }));
+    }
+  }, [state]);
+
+  const updateConfig = useCallback((updates: Partial<StreamConfig>) => {
+    setState(prev => ({
+      ...prev,
+      config: prev.config ? { ...prev.config, ...updates } : null,
+    }));
+  }, []);
+
+  useEffect(() => {
     return () => {
-      if (timer) clearInterval(timer);
+      if (statsIntervalRef.current) clearInterval(statsIntervalRef.current);
+      if (durationIntervalRef.current) clearInterval(durationIntervalRef.current);
     };
-  }, [isLive, currentStream]);
+  }, []);
 
-  async function startStream(activePlatforms: string[], displayName: string, email: string) {
-    if (!userId) return;
-    if (activePlatforms.length === 0) {
-      toast.warning("Para iniciar a live, você precisa ter pelo menos uma plataforma ativada nas conexões!");
-      return;
-    }
-
-    try {
-      const { data, error } = await supabase
-        .from("streams")
-        .insert({
-          user_id: userId,
-          title: `Stream Ao Vivo — ${displayName || email.split("@")[0]}`,
-          status: "live",
-          platforms: activePlatforms,
-          started_at: new Date().toISOString(),
-          peak_viewers: Math.floor(Math.random() * 40) + 15,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      setStream(data);
-      setLive(true);
-      toast.success("Transmissão iniciada em todas as plataformas selecionadas!");
-      return data;
-    } catch (e: any) {
-      toast.error("Erro ao iniciar a live: " + e.message);
-      throw e;
-    }
-  }
-
-  async function endStream() {
-    if (!currentStream) return;
-
-    try {
-      const { error } = await supabase
-        .from("streams")
-        .update({
-          status: "ended",
-          ended_at: new Date().toISOString(),
-          peak_viewers: viewers,
-        })
-        .eq("id", currentStream.id);
-
-      if (error) throw error;
-
-      clearStream();
-      toast.success("Transmissão encerrada! Histórico salvo.");
-      await loadStreamHistory();
-    } catch (e: any) {
-      toast.error("Erro ao encerrar a live: " + e.message);
-      throw e;
-    }
-  }
+  const isLive = state.status === 'live';
+  const isPaused = state.status === 'paused';
+  const isConnecting = state.status === 'connecting';
 
   return {
-    currentStream,
+    ...state,
     isLive,
-    viewers,
-    duration,
-    streamHistory,
+    isPaused,
+    isConnecting,
     startStream,
     endStream,
-    loadStreamHistory,
+    pauseStream,
+    resumeStream,
+    updateConfig,
   };
 }

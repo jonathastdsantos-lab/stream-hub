@@ -3,8 +3,9 @@ import { useState, useEffect, useRef } from "react";
 import { Toaster, toast } from "sonner";
 import { Tv, MessageSquare, Globe, Play, Square, Zap, Info, Wifi, History, Eye, Send } from "lucide-react";
 
-// Zustand state selectors
-import { useUiStore } from "../lib/stores/ui.store";
+// Zustand state selectors are local now
+import { useAnalytics } from "../hooks/useAnalytics";
+import { useCallback } from "react";
 
 // Custom React hooks
 import { useAuth } from "../hooks/useAuth";
@@ -88,7 +89,7 @@ const StatCard = ({
 );
 
 function AuthPage() {
-  const { login, signup, isLoading, error } = useAuth();
+  const { login, register, isLoading, error } = useAuth();
   const [tab, setTab] = useState<"login" | "register">("login");
   const [email, setEmail] = useState("");
   const [pass, setPass] = useState("");
@@ -104,11 +105,11 @@ function AuthPage() {
 
     try {
       if (tab === "register") {
-        await signup(email, pass, name);
+        await register({ email, password: pass, name });
         setSuccessMsg("Conta criada com sucesso! Por favor, faça o login.");
         setTab("login");
       } else {
-        await login(email, pass);
+        await login({ email, password: pass });
       }
     } catch (err: any) {
       toast.error(err.message || "Erro de autenticação.");
@@ -310,44 +311,115 @@ function AuthPage() {
 }
 
 function DashboardWrapper() {
-  const { user, profile, logout, saveProfile } = useAuth();
-  const { activeTab, setActiveTab } = useUiStore();
+  const { user, logout, register, login, updateUser } = useAuth();
+  const profile = user ? {
+    display_name: user.name,
+    bio: "Canal do " + user.name,
+    plan: (user as any).plan || "free",
+  } : null;
 
+  const saveProfile = useCallback(async (displayName: string, bio: string, plan: string) => {
+    updateUser({ name: displayName });
+    if (user) {
+      (user as any).plan = plan;
+    }
+  }, [user, updateUser]);
+
+  const [activeTab, setActiveTab] = useState("dashboard");
+
+  const streamState = useStream();
   const {
-    currentStream,
     isLive,
-    viewers,
-    duration,
-    streamHistory,
     startStream,
     endStream,
-  } = useStream(user?.id);
+  } = streamState;
+  const viewers = streamState.stats.viewers;
+  const duration = streamState.stats.duration;
+
+  const currentStream = streamState.streamId ? {
+    id: streamState.streamId,
+    title: streamState.config?.title || "Stream",
+    platforms: [] as string[],
+  } : null;
+
+  const chatState = useChat({ streamId: currentStream?.id || "" });
+  const { sendMessage, banUser } = chatState;
+  const [chatFilter, setChatFilter] = useState("all");
+
+  const messages = chatState.messages.map((m) => ({
+    id: m.id,
+    platform: m.platform as PlatformId,
+    user: m.username,
+    msg: m.content,
+    time: new Date(m.timestamp).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+    spamAlert: !!m.metadata?.spamAlert,
+    linkAlert: !!m.metadata?.linkAlert,
+    hidden: false,
+  }));
+
+  const hideMessage = useCallback((id: string) => {
+    chatState.deleteMessage(id);
+  }, [chatState]);
+  const revealMessage = useCallback((id: string) => {}, []);
+
+  const simulateAlert = useCallback(async (platform: string) => {
+    toast.info(`Simulação de alerta na plataforma ${platform.toUpperCase()}`);
+  }, []);
 
   const {
-    messages,
-    sendMessage,
-    simulateAlert,
-    chatFilter,
-    setFilter: setChatFilter,
-    banUser,
-    hideMessage,
-    revealMessage,
-  } = useChat(currentStream?.id, isLive);
-
-  const {
-    connected,
-    platformDetails,
-    connectionsList,
+    platforms,
     togglePlatform,
-    reconnectPlatform,
-  } = usePlatforms(user?.id, profile?.display_name, user?.email);
+    connectPlatform,
+  } = usePlatforms();
+
+  const connected = platforms.reduce((acc, p) => {
+    acc[p.id] = p.isConnected;
+    return acc;
+  }, {} as Record<PlatformId, boolean>);
+
+  const platformDetails = platforms.reduce((acc, p) => {
+    acc[p.id] = {
+      channel_name: p.channelName,
+      channel_id: p.channelId,
+      rtmp_url: p.rtmpUrl,
+      stream_key: p.streamKey,
+      connected_at: new Date().toISOString(),
+    };
+    return acc;
+  }, {} as Record<PlatformId, any>);
+
+  const connectionsList = platforms.map(p => ({
+    id: p.id,
+    platform: p.id,
+    channel_name: p.channelName || p.name,
+    is_active: p.isConnected,
+  }));
+
+  const reconnectPlatform = useCallback(async (platformId: PlatformId) => {
+    return connectPlatform(platformId);
+  }, [connectPlatform]);
+
+  const analytics = useAnalytics(streamState.streamId || undefined);
+
+  useEffect(() => {
+    analytics.fetchHistory();
+  }, [analytics.fetchHistory]);
+
+  const streamHistory = analytics.historicalStreams.map(s => ({
+    id: s.id,
+    title: s.title,
+    started_at: s.startedAt ? new Date(s.startedAt).toISOString() : new Date().toISOString(),
+    ended_at: s.startedAt ? new Date(new Date(s.startedAt).getTime() + s.duration * 1000).toISOString() : new Date().toISOString(),
+    peak_viewers: s.peakViewers,
+    platforms: s.platforms,
+  }));
 
   const [chatMsg, setChatMsg] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [bio, setBio] = useState("");
   const [plan, setPlan] = useState("free");
   const [isSaving, setIsSaving] = useState(false);
-  const chatRef = useRef<HTMLDivElement | null>(null);
+  const chatRef = useRef<HTMLDivElement>(null!);
 
   // Recovery profile states to settings inputs initially
   useEffect(() => {
@@ -386,24 +458,15 @@ function DashboardWrapper() {
     const activePlatforms = Object.keys(connected).filter(
       (k) => connected[k as PlatformId]
     );
-    await startStream(
-      activePlatforms,
-      profile?.display_name || "",
-      user?.email || ""
-    );
+    await startStream({
+      title: `Live de ${profile?.display_name || user?.name || "Streamer"}`,
+      description: `Transmissão multicanais nas redes: ${activePlatforms.join(", ")}`,
+    });
   };
 
   const triggerSendChat = async () => {
     if (!chatMsg.trim()) return;
-    const activePlatforms = Object.keys(connected).filter(
-      (k) => connected[k as PlatformId]
-    ) as PlatformId[];
-    const platform = activePlatforms.length > 0 ? activePlatforms[0] : "twitch";
-    await sendMessage(
-      chatMsg,
-      profile?.display_name || user?.email?.split("@")[0] || "streamer",
-      platform
-    );
+    await sendMessage(chatMsg);
     setChatMsg("");
   };
 
@@ -423,6 +486,8 @@ function DashboardWrapper() {
     const platform = activePlatforms.length > 0 ? activePlatforms[0] : "twitch";
     await simulateAlert(platform);
   };
+
+
 
   // Mock analytics data for visual chart feedback
   const analyticsData = [
@@ -519,7 +584,7 @@ function DashboardWrapper() {
                 return (
                   <button
                     key={p.id}
-                    onClick={() => togglePlatform(p.id)}
+                    onClick={() => togglePlatform(p.id, !connected[p.id])}
                     style={{
                       display: "flex",
                       alignItems: "center",
@@ -674,7 +739,7 @@ function DashboardWrapper() {
       <PlatformsTab
         connected={connected}
         platformDetails={platformDetails}
-        togglePlatform={togglePlatform}
+        togglePlatform={(platformId) => togglePlatform(platformId, !connected[platformId])}
         reconnectPlatform={reconnectPlatform}
       />
     ),

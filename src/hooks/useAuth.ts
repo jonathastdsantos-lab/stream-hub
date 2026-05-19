@@ -1,181 +1,130 @@
-import { useEffect } from "react";
-import { supabase } from "../lib/supabase";
-import { useAuthStore } from "../lib/stores/auth.store";
-import { toast } from "sonner";
+import { useState, useEffect, useCallback } from 'react';
+
+interface User {
+  id: string;
+  email: string;
+  name: string;
+  avatar?: string;
+  role: 'admin' | 'streamer' | 'viewer';
+  createdAt: string;
+}
+
+interface AuthState {
+  user: User | null;
+  token: string | null;
+  isAuthenticated: boolean;
+  isLoading: boolean;
+  error: string | null;
+}
+
+interface LoginCredentials {
+  email: string;
+  password: string;
+}
+
+interface RegisterData extends LoginCredentials {
+  name: string;
+}
 
 export function useAuth() {
-  const {
-    user,
-    profile,
-    isLoading,
-    error,
-    setUser,
-    setProfile,
-    setLoading,
-    setError,
-    clearAuth,
-  } = useAuthStore();
+  const [state, setState] = useState<AuthState>({
+    user: null,
+    token: null,
+    isAuthenticated: false,
+    isLoading: true,
+    error: null,
+  });
 
   useEffect(() => {
-    // Listen to auth changes
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        if (session?.user) {
-          setUser(session.user);
-          await loadUserProfile(session.user.id);
-        } else {
-          clearAuth();
-        }
+    const token = localStorage.getItem('auth_token');
+    const userStr = localStorage.getItem('auth_user');
+    if (token && userStr) {
+      try {
+        const user = JSON.parse(userStr) as User;
+        setState({ user, token, isAuthenticated: true, isLoading: false, error: null });
+      } catch {
+        localStorage.removeItem('auth_token');
+        localStorage.removeItem('auth_user');
+        setState(prev => ({ ...prev, isLoading: false }));
       }
-    );
-
-    // Initial session load
-    async function initSession() {
-      setLoading(true);
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session?.user) {
-        setUser(session.user);
-        await loadUserProfile(session.user.id);
-      } else {
-        clearAuth();
-      }
-      setLoading(false);
+    } else {
+      setState(prev => ({ ...prev, isLoading: false }));
     }
-
-    initSession();
-
-    return () => {
-      subscription.unsubscribe();
-    };
   }, []);
 
-  async function loadUserProfile(userId: string) {
-    let { data: prof, error: profErr } = await supabase
-      .from("profiles")
-      .select("*")
-      .eq("id", userId)
-      .single();
-
-    if (profErr || !prof) {
-      // Trigger fallback auto-creation check / wait
-      await new Promise((r) => setTimeout(r, 1000));
-      const retry = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", userId)
-        .single();
-      
-      if (!retry.error && retry.data) {
-        prof = retry.data;
-      } else {
-        prof = {
-          username: user?.email?.split("@")[0] || "streamer",
-          display_name: user?.email?.split("@")[0] || "Streamer",
-          avatar_url: null,
-          bio: "",
-          plan: "free",
-        };
+  const login = useCallback(async (credentials: LoginCredentials) => {
+    setState(prev => ({ ...prev, isLoading: true, error: null }));
+    try {
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || 'Login failed');
       }
+      const { user, token } = await res.json();
+      localStorage.setItem('auth_token', token);
+      localStorage.setItem('auth_user', JSON.stringify(user));
+      setState({ user, token, isAuthenticated: true, isLoading: false, error: null });
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Login failed';
+      setState(prev => ({ ...prev, isLoading: false, error: message }));
+      return { success: false, error: message };
     }
-    setProfile(prof);
-  }
+  }, []);
 
-  async function login(email: string, pass: string) {
-    setError(null);
-    setLoading(true);
+  const register = useCallback(async (data: RegisterData) => {
+    setState(prev => ({ ...prev, isLoading: true, error: null }));
     try {
-      const { error: signInErr } = await supabase.auth.signInWithPassword({
-        email,
-        password: pass,
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
       });
-      if (signInErr) throw signInErr;
-    } catch (e: any) {
-      const msg = e.message || "Erro ao fazer login.";
-      setError(msg);
-      throw e;
-    } finally {
-      setLoading(false);
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.message || 'Registration failed');
+      }
+      const { user, token } = await res.json();
+      localStorage.setItem('auth_token', token);
+      localStorage.setItem('auth_user', JSON.stringify(user));
+      setState({ user, token, isAuthenticated: true, isLoading: false, error: null });
+      return { success: true };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Registration failed';
+      setState(prev => ({ ...prev, isLoading: false, error: message }));
+      return { success: false, error: message };
     }
-  }
+  }, []);
 
-  async function signup(email: string, pass: string, name: string) {
-    setError(null);
-    setLoading(true);
-    try {
-      const { error: signUpErr } = await supabase.auth.signUp({
-        email,
-        password: pass,
-        options: {
-          data: {
-            username: name.trim().toLowerCase().replace(/\s+/g, "_"),
-            full_name: name,
-          },
-        },
-      });
-      if (signUpErr) throw signUpErr;
-    } catch (e: any) {
-      const msg = e.message || "Erro ao criar conta.";
-      setError(msg);
-      throw e;
-    } finally {
-      setLoading(false);
-    }
-  }
+  const logout = useCallback(() => {
+    localStorage.removeItem('auth_token');
+    localStorage.removeItem('auth_user');
+    setState({ user: null, token: null, isAuthenticated: false, isLoading: false, error: null });
+  }, []);
 
-  async function logout() {
-    setLoading(true);
-    try {
-      await supabase.auth.signOut();
-      clearAuth();
-      toast.success("Desconectado com sucesso!");
-    } catch (e: any) {
-      toast.error(e.message || "Erro ao desconectar.");
-    } finally {
-      setLoading(false);
-    }
-  }
+  const updateUser = useCallback((updates: Partial<User>) => {
+    setState(prev => {
+      if (!prev.user) return prev;
+      const updated = { ...prev.user, ...updates };
+      localStorage.setItem('auth_user', JSON.stringify(updated));
+      return { ...prev, user: updated };
+    });
+  }, []);
 
-  async function saveProfile(displayName: string, bio: string, plan: string) {
-    if (!user) return;
-    setLoading(true);
-    try {
-      const { error: updateErr } = await supabase
-        .from("profiles")
-        .update({
-          display_name: displayName,
-          bio: bio,
-          plan: plan,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", user.id);
-
-      if (updateErr) throw updateErr;
-
-      setProfile({
-        ...profile,
-        display_name: displayName,
-        bio,
-        plan,
-      });
-      toast.success("Perfil e configurações salvos com sucesso!");
-    } catch (e: any) {
-      toast.error("Erro ao salvar perfil: " + e.message);
-      throw e;
-    } finally {
-      setLoading(false);
-    }
-  }
+  const clearError = useCallback(() => {
+    setState(prev => ({ ...prev, error: null }));
+  }, []);
 
   return {
-    user,
-    profile,
-    isLoading,
-    error,
-    isAuthenticated: !!user,
+    ...state,
     login,
-    signup,
+    register,
     logout,
-    saveProfile,
-    loadUserProfile,
+    updateUser,
+    clearError,
   };
 }

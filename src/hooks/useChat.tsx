@@ -1,321 +1,190 @@
-import { useEffect } from "react";
-import { supabase } from "../lib/supabase";
-import { useChatStore, ChatMsg, PlatformId } from "../lib/stores/chat.store";
-import { toast } from "sonner";
+import { useState, useEffect, useRef, useCallback } from 'react';
 
-export function useChat(streamId?: string, isLive?: boolean) {
-  const {
-    messages,
-    chatFilter,
-    bannedUsers,
-    addMessage,
-    setMessages,
-    setFilter,
-    banUser,
-    unbanUser,
-    hideMessage,
-    revealMessage,
-    clearMessages,
-  } = useChatStore();
+interface ChatMessage {
+  id: string;
+  userId: string;
+  username: string;
+  avatar?: string;
+  content: string;
+  timestamp: Date;
+  platform: string;
+  type: 'message' | 'donation' | 'subscription' | 'follow' | 'system';
+  metadata?: Record<string, unknown>;
+  isModerator?: boolean;
+  isHighlighted?: boolean;
+}
 
-  const alertTypeLabel = (type: string) => {
-    switch (type) {
-      case "donation": return "doou!";
-      case "subscription": return "se inscreveu!";
-      case "follow": return "seguiu o canal!";
-      case "raid": return "está fazendo uma raid!";
-      case "bits": return "enviou bits!";
-      default: return "interagiu!";
-    }
-  };
+interface ChatState {
+  messages: ChatMessage[];
+  isConnected: boolean;
+  isConnecting: boolean;
+  error: string | null;
+  bannedUsers: Set<string>;
+  moderators: Set<string>;
+  slowMode: number;
+  followerOnlyMode: boolean;
+}
 
-  // Heuristics for spam and links detection
-  const analyzeMessage = (text: string) => {
-    // 1. Link Detection
-    const linkRegex = /(https?:\/\/[^\s]+|www\.[^\s]+|\b[a-zA-Z0-9-]+\.[a-zA-Z]{2,}\b)/gi;
-    const linkAlert = linkRegex.test(text);
+interface ChatOptions {
+  streamId: string;
+  maxMessages?: number;
+  slowMode?: number;
+}
 
-    // 2. Spam Detection
-    // A. Shouting (ALL CAPS)
-    const lettersCount = text.replace(/[^a-zA-Z]/g, "").length;
-    const capsCount = text.replace(/[^A-Z]/g, "").length;
-    const isShouting = lettersCount > 6 && (capsCount / lettersCount) > 0.8;
+export function useChat(options: ChatOptions) {
+  const { streamId, maxMessages = 200, slowMode = 0 } = options;
 
-    // B. Character Repetition (e.g. kkkkkkkkkkk, ooooooooo, aaaaaaaaa)
-    const hasRepetitiveText = /(.)\1{8,}/i.test(text);
+  const [state, setState] = useState<ChatState>({
+    messages: [],
+    isConnected: false,
+    isConnecting: false,
+    error: null,
+    bannedUsers: new Set(),
+    moderators: new Set(),
+    slowMode,
+    followerOnlyMode: false,
+  });
 
-    // C. Emoji Overload
-    const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{2600}-\u{26FF}]|[\u{1F1E6}-\u{1F1FF}]/gu;
-    const emojisCount = (text.match(emojiRegex) || []).length;
-    const isEmojiSpam = emojisCount > 5;
+  const wsRef = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef(0);
+  const MAX_RECONNECT_ATTEMPTS = 5;
 
-    const spamAlert = isShouting || hasRepetitiveText || isEmojiSpam;
+  const connect = useCallback(() => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    return { linkAlert, spamAlert };
-  };
+    setState(prev => ({ ...prev, isConnecting: true, error: null }));
+    const token = localStorage.getItem('auth_token');
+    const wsUrl = `${process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:3001'}/chat/${streamId}?token=${token}`;
 
-  // Fetch initial chat logs and subscribe to realtime events
-  useEffect(() => {
-    if (!streamId) {
-      clearMessages();
-      return;
-    }
+    const ws = new WebSocket(wsUrl);
+    wsRef.current = ws;
 
-    async function loadChatMessages() {
-      const { data, error } = await supabase
-        .from("chat_messages")
-        .select("*")
-        .eq("stream_id", streamId)
-        .order("created_at", { ascending: true });
+    ws.onopen = () => {
+      reconnectAttemptsRef.current = 0;
+      setState(prev => ({ ...prev, isConnected: true, isConnecting: false, error: null }));
+    };
 
-      if (!error && data) {
-        const msgs: ChatMsg[] = data
-          .filter((msg: any) => !bannedUsers.includes(msg.username.toLowerCase()))
-          .map((msg: any) => {
-            const analysis = analyzeMessage(msg.message);
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'message' || data.type === 'donation' ||
+            data.type === 'subscription' || data.type === 'follow' ||
+            data.type === 'system') {
+          const msg: ChatMessage = { ...data, timestamp: new Date(data.timestamp) };
+          setState(prev => ({
+            ...prev,
+            messages: [...prev.messages.slice(-(maxMessages - 1)), msg],
+          }));
+        } else if (data.type === 'ban') {
+          setState(prev => {
+            const banned = new Set(prev.bannedUsers);
+            banned.add(data.userId);
             return {
-              id: msg.id,
-              user: msg.username,
-              msg: msg.message,
-              platform: msg.platform as PlatformId,
-              time: new Date(msg.created_at).toLocaleTimeString("pt-BR", {
-                hour: "2-digit",
-                minute: "2-digit",
-              }),
-              ...analysis,
-              hidden: false,
+              ...prev,
+              bannedUsers: banned,
+              messages: prev.messages.filter(m => m.userId !== data.userId),
             };
           });
-        setMessages(msgs);
+        } else if (data.type === 'settings') {
+          setState(prev => ({ ...prev, ...data.settings }));
+        }
+      } catch {
+        // ignore malformed messages
       }
-    }
-
-    loadChatMessages();
-
-    // Subscribe to messages
-    const chatChannel = supabase
-      .channel(`chat_${streamId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "chat_messages",
-          filter: `stream_id=eq.${streamId}`,
-        },
-        (payload: any) => {
-          const userLower = payload.new.username.toLowerCase();
-          // Skip if user is banned
-          if (bannedUsers.includes(userLower)) {
-            return;
-          }
-
-          const analysis = analyzeMessage(payload.new.message);
-          const newMsg: ChatMsg = {
-            id: payload.new.id,
-            user: payload.new.username,
-            msg: payload.new.message,
-            platform: payload.new.platform as PlatformId,
-            time: new Date(payload.new.created_at).toLocaleTimeString("pt-BR", {
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-            ...analysis,
-            hidden: false,
-          };
-          addMessage(newMsg);
-
-          // Trigger basic warning toasts for safety feedback
-          if (analysis.spamAlert) {
-            toast.warning(`[Moderador] Possível SPAM detectado de ${newMsg.user}: "${newMsg.msg.substring(0, 20)}..."`);
-          } else if (analysis.linkAlert) {
-            toast.info(`[Moderador] Mensagem de ${newMsg.user} contém links.`);
-          }
-        }
-      )
-      .subscribe();
-
-    // Subscribe to alerts
-    const alertsChannel = supabase
-      .channel(`alerts_${streamId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "INSERT",
-          schema: "public",
-          table: "stream_alerts",
-          filter: `stream_id=eq.${streamId}`,
-        },
-        (payload: any) => {
-          const alert = payload.new;
-          toast.custom(
-            (t) => (
-              <div
-                className="glass"
-                style={{
-                  borderRadius: 14,
-                  padding: "16px 22px",
-                  color: "#e8e8f2",
-                  fontFamily: "'Syne', 'Space Grotesk', sans-serif",
-                  boxShadow: `0 8px 30px rgba(0, 240, 181, 0.3)`,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 6,
-                  minWidth: 320,
-                  border: `1.5px solid #00f0b5`,
-                  background: "linear-gradient(135deg, #16161c 0%, #0d0d12 100%)",
-                  animation: "slideIn .35s cubic-bezier(0.16, 1, 0.3, 1)",
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span
-                    style={{
-                      fontSize: 10,
-                      fontWeight: 800,
-                      letterSpacing: "0.14em",
-                      color: "#00f0b5",
-                      textTransform: "uppercase",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 4,
-                    }}
-                  >
-                    ⭐ NOVO ALERTA — {alert.platform.toUpperCase()}
-                  </span>
-                </div>
-                <p style={{ fontSize: 15, fontWeight: 800, marginTop: 4 }}>
-                  {alert.username} <span style={{ color: "#00f0b5" }}>{alertTypeLabel(alert.type)}</span>
-                </p>
-                {alert.amount && (
-                  <p style={{ fontSize: 20, color: "#fff", fontWeight: 900, fontFamily: "'JetBrains Mono', 'Fira Code', monospace", margin: "2px 0" }}>
-                    {alert.currency === "BRL" ? "R$ " : "$"}
-                    {Number(alert.amount).toFixed(2)}
-                  </p>
-                )}
-                {alert.message && (
-                  <p
-                    style={{
-                      fontSize: 12,
-                      color: "#75758c",
-                      fontStyle: "italic",
-                      background: "#1c1c24",
-                      padding: "6px 10px",
-                      borderRadius: 6,
-                      borderLeft: `3px solid #00f0b5`,
-                      marginTop: 6,
-                    }}
-                  >
-                    "{alert.message}"
-                  </p>
-                )}
-              </div>
-            ),
-            {
-              duration: 6000,
-              position: "top-right",
-            }
-          );
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(chatChannel);
-      supabase.removeChannel(alertsChannel);
     };
-  }, [streamId, bannedUsers]);
 
-  async function sendMessage(text: string, username: string, platform: PlatformId) {
-    if (!text.trim()) return;
-    if (!streamId) {
-      toast.warning("Inicie a transmissão para poder interagir no chat!");
-      return;
-    }
+    ws.onclose = () => {
+      setState(prev => ({ ...prev, isConnected: false, isConnecting: false }));
+      if (reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
+        const delay = Math.min(1000 * 2 ** reconnectAttemptsRef.current, 30000);
+        reconnectAttemptsRef.current++;
+        reconnectTimeoutRef.current = setTimeout(connect, delay);
+      } else {
+        setState(prev => ({ ...prev, error: 'Unable to connect to chat' }));
+      }
+    };
 
-    try {
-      const { error } = await supabase.from("chat_messages").insert({
-        stream_id: streamId,
-        platform: platform,
-        username: username,
-        message: text.trim(),
-        is_mod: true,
-      });
+    ws.onerror = () => {
+      setState(prev => ({ ...prev, error: 'Chat connection error' }));
+    };
+  }, [streamId, maxMessages]);
 
-      if (error) throw error;
-    } catch (e: any) {
-      toast.error("Erro ao enviar chat: " + e.message);
-      throw e;
-    }
-  }
+  const disconnect = useCallback(() => {
+    if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current);
+    reconnectAttemptsRef.current = MAX_RECONNECT_ATTEMPTS;
+    wsRef.current?.close();
+    setState(prev => ({ ...prev, isConnected: false }));
+  }, []);
 
-  async function simulateAlert(platform: PlatformId) {
-    if (!streamId) {
-      toast.warning("Apenas transmissões ativas podem receber alertas! Inicie a live.");
-      return;
-    }
+  const sendMessage = useCallback((content: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return false;
+    wsRef.current.send(JSON.stringify({ type: 'message', content }));
+    return true;
+  }, []);
 
-    const types = ["donation", "subscription", "follow", "bits"];
-    const type = types[Math.floor(Math.random() * types.length)];
-    const users = ["alvaro_br", "marcia_live", "stream_watcher", "gustavo_10", "ana_gameplay"];
-    const username = users[Math.floor(Math.random() * users.length)];
-    const messagesPool = ["Excelente conteúdo, parabéns!", "Mais um sub pro canal!", "Manda salve!", "Faz o clipe dessa jogada!!"];
-    const message = messagesPool[Math.floor(Math.random() * messagesPool.length)];
-    const amount = type === "donation" ? (Math.random() * 95 + 5).toFixed(2) : null;
+  const banUser = useCallback((userId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'ban', userId }));
+    setState(prev => {
+      const banned = new Set(prev.bannedUsers);
+      banned.add(userId);
+      return {
+        ...prev,
+        bannedUsers: banned,
+        messages: prev.messages.filter(m => m.userId !== userId),
+      };
+    });
+  }, []);
 
-    try {
-      const { error } = await supabase.from("stream_alerts").insert({
-        stream_id: streamId,
-        type: type,
-        platform: platform,
-        username: username,
-        amount: amount ? parseFloat(amount) : null,
-        currency: "BRL",
-        message: type === "follow" ? null : message,
-        shown: false,
-      });
+  const unbanUser = useCallback((userId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'unban', userId }));
+    setState(prev => {
+      const banned = new Set(prev.bannedUsers);
+      banned.delete(userId);
+      return { ...prev, bannedUsers: banned };
+    });
+  }, []);
 
-      if (error) throw error;
-      toast.success("Alerta inserido no banco de dados com sucesso!");
-    } catch (e: any) {
-      toast.error("Erro ao simular alerta: " + e.message);
-      throw e;
-    }
-  }
+  const deleteMessage = useCallback((messageId: string) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'delete', messageId }));
+    setState(prev => ({
+      ...prev,
+      messages: prev.messages.filter(m => m.id !== messageId),
+    }));
+  }, []);
 
-  // Double filter: local user filters in case new entries are added
-  const filteredChat = messages.filter(
-    (m) =>
-      (chatFilter === "all" || m.platform === chatFilter) &&
-      !bannedUsers.includes(m.user.toLowerCase())
-  );
+  const clearChat = useCallback(() => {
+    setState(prev => ({ ...prev, messages: [] }));
+  }, []);
 
-  const triggerBanUser = (username: string) => {
-    banUser(username);
-    toast.error(`Usuário ${username} foi BANIDO e suas mensagens removidas.`);
-  };
+  const setSlowMode = useCallback((seconds: number) => {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
+    wsRef.current.send(JSON.stringify({ type: 'settings', settings: { slowMode: seconds } }));
+    setState(prev => ({ ...prev, slowMode: seconds }));
+  }, []);
 
-  const triggerHideMessage = (msgId: string) => {
-    hideMessage(msgId);
-    toast.info("Mensagem ocultada com sucesso.");
-  };
+  useEffect(() => {
+    if (streamId) connect();
+    return () => disconnect();
+  }, [streamId, connect, disconnect]);
 
-  const triggerRevealMessage = (msgId: string) => {
-    revealMessage(msgId);
-    toast.success("Mensagem restaurada.");
-  };
+  const donations = state.messages.filter(m => m.type === 'donation');
+  const recentDonations = donations.slice(-10);
 
   return {
-    messages: filteredChat,
-    allMessages: messages,
-    chatFilter,
-    bannedUsers,
-    setFilter,
+    ...state,
     sendMessage,
-    simulateAlert,
-    banUser: triggerBanUser,
+    banUser,
     unbanUser,
-    hideMessage: triggerHideMessage,
-    revealMessage: triggerRevealMessage,
-    clearMessages,
+    deleteMessage,
+    clearChat,
+    setSlowMode,
+    connect,
+    disconnect,
+    recentDonations,
+    messageCount: state.messages.length,
   };
 }

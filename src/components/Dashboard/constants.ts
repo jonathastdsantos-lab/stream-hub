@@ -1,4 +1,4 @@
-export type PlatformId = "youtube" | "twitch" | "kick" | "tiktok" | "facebook";
+export type PlatformId = "youtube" | "twitch" | "kick" | "tiktok" | "facebook" | "instagram" | "custom";
 
 export const PLATFORMS: { id: PlatformId; label: string; color: string; icon: string }[] = [
   { id: "youtube", label: "YouTube", color: "#FF0000", icon: "▶" },

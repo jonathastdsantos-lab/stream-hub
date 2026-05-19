@@ -1,119 +1,192 @@
-import { useState, useEffect } from "react";
-import { supabase } from "../lib/supabase";
-import { toast } from "sonner";
+import { useState, useEffect, useCallback, useRef } from 'react';
 
-export interface AnalyticsMetrics {
-  viewerCount: number;
+interface ViewerDataPoint {
+  timestamp: Date;
+  viewers: number;
+  platform: string;
+}
+
+interface PlatformStats {
+  platformId: string;
+  platformName: string;
+  viewers: number;
   peakViewers: number;
-  messagesPerSec: number;
-  avgChatters: number;
-  followersToday: number;
+  chatMessages: number;
+  newFollowers: number;
+  donations: number;
+  donationAmount: number;
+}
+
+interface StreamAnalytics {
+  streamId: string;
+  startedAt: Date;
+  duration: number;
+  totalViewers: number;
+  peakViewers: number;
+  averageViewers: number;
+  totalChatMessages: number;
+  newFollowers: number;
+  totalDonations: number;
+  totalDonationAmount: number;
+  viewerHistory: ViewerDataPoint[];
+  platformStats: PlatformStats[];
+  engagementRate: number;
+  retentionRate: number;
+}
+
+interface HistoricalStream {
+  id: string;
+  title: string;
+  startedAt: Date;
+  duration: number;
+  peakViewers: number;
+  totalViewers: number;
+  totalDonationAmount: number;
+  platforms: string[];
+}
+
+interface AnalyticsState {
+  currentStream: StreamAnalytics | null;
+  historicalStreams: HistoricalStream[];
+  isLoading: boolean;
+  isLoadingHistory: boolean;
+  error: string | null;
+  realtimeEnabled: boolean;
 }
 
 export function useAnalytics(streamId?: string) {
-  const [metrics, setMetrics] = useState<AnalyticsMetrics>({
-    viewerCount: 0,
-    peakViewers: 0,
-    messagesPerSec: 0,
-    avgChatters: 0,
-    followersToday: 0,
+  const [state, setState] = useState<AnalyticsState>({
+    currentStream: null,
+    historicalStreams: [],
+    isLoading: false,
+    isLoadingHistory: false,
+    error: null,
+    realtimeEnabled: false,
   });
-  const [isLoading, setIsLoading] = useState(false);
+
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchCurrentAnalytics = useCallback(async (id: string) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch(`/api/analytics/streams/${id}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Failed to fetch analytics');
+      const data = await res.json();
+
+      setState(prev => ({
+        ...prev,
+        currentStream: {
+          ...data,
+          startedAt: new Date(data.startedAt),
+          viewerHistory: data.viewerHistory.map((v: ViewerDataPoint & { timestamp: string }) => ({
+            ...v,
+            timestamp: new Date(v.timestamp),
+          })),
+        },
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch analytics';
+      setState(prev => ({ ...prev, error: message }));
+    }
+  }, []);
+
+  const startRealtime = useCallback((id: string) => {
+    if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+    setState(prev => ({ ...prev, realtimeEnabled: true }));
+    fetchCurrentAnalytics(id);
+    pollingIntervalRef.current = setInterval(() => fetchCurrentAnalytics(id), 10000);
+  }, [fetchCurrentAnalytics]);
+
+  const stopRealtime = useCallback(() => {
+    if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+    setState(prev => ({ ...prev, realtimeEnabled: false }));
+  }, []);
+
+  const fetchHistory = useCallback(async (limit = 20, offset = 0) => {
+    setState(prev => ({ ...prev, isLoadingHistory: true }));
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch(`/api/analytics/history?limit=${limit}&offset=${offset}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Failed to fetch history');
+      const data = await res.json();
+      setState(prev => ({
+        ...prev,
+        isLoadingHistory: false,
+        historicalStreams: data.streams.map((s: HistoricalStream & { startedAt: string }) => ({
+          ...s,
+          startedAt: new Date(s.startedAt),
+        })),
+      }));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to fetch history';
+      setState(prev => ({ ...prev, isLoadingHistory: false, error: message }));
+    }
+  }, []);
+
+  const getStreamReport = useCallback(async (id: string) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch(`/api/analytics/streams/${id}/report`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Failed to generate report');
+      return await res.json();
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Failed to generate report' };
+    }
+  }, []);
+
+  const getTopMoments = useCallback(async (id: string) => {
+    try {
+      const token = localStorage.getItem('auth_token');
+      const res = await fetch(`/api/analytics/streams/${id}/moments`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) throw new Error('Failed to fetch moments');
+      return await res.json();
+    } catch (error) {
+      return { error: error instanceof Error ? error.message : 'Failed to fetch moments' };
+    }
+  }, []);
+
+  const getAggregatedStats = useCallback(() => {
+    const streams = state.historicalStreams;
+    if (!streams.length) return null;
+
+    return {
+      totalStreams: streams.length,
+      totalDuration: streams.reduce((sum, s) => sum + s.duration, 0),
+      averagePeakViewers: Math.round(streams.reduce((sum, s) => sum + s.peakViewers, 0) / streams.length),
+      totalEarnings: streams.reduce((sum, s) => sum + s.totalDonationAmount, 0),
+      bestStream: streams.reduce((best, s) => s.peakViewers > best.peakViewers ? s : best, streams[0]),
+    };
+  }, [state.historicalStreams]);
 
   useEffect(() => {
-    if (!streamId) return;
-
-    setIsLoading(true);
-    // Fetch initial stream stats from supabase
-    async function fetchStats() {
-      try {
-        const { data, error } = await supabase
-          .from("streams")
-          .select("*")
-          .eq("id", streamId)
-          .maybeSingle();
-
-        if (data) {
-          setMetrics((prev) => ({
-            ...prev,
-            viewerCount: data.viewer_count || 0,
-            peakViewers: Math.max(prev.peakViewers, data.viewer_count || 0),
-          }));
-        }
-      } catch (err) {
-        console.error("[useAnalytics] Initial fetch error:", err);
-      } finally {
-        setIsLoading(false);
-      }
+    if (streamId) {
+      startRealtime(streamId);
     }
-
-    fetchStats();
-
-    // Subscribe to realtime streams updates to stay completely synced
-    const channel = supabase
-      .channel(`analytics_stream_${streamId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "UPDATE",
-          schema: "public",
-          table: "streams",
-          filter: `id=eq.${streamId}`,
-        },
-        (payload) => {
-          const updated = payload.new;
-          if (updated) {
-            setMetrics((prev) => ({
-              ...prev,
-              viewerCount: updated.viewer_count || 0,
-              peakViewers: Math.max(prev.peakViewers, updated.viewer_count || 0),
-            }));
-          }
-        }
-      )
-      .subscribe();
-
     return () => {
-      supabase.removeChannel(channel);
+      if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
     };
-  }, [streamId]);
+  }, [streamId, startRealtime]);
 
-  function calculateEngagement(): number {
-    if (metrics.viewerCount === 0) return 0;
-    // Heuristics: messages per second relative to total viewer count
-    const base = (metrics.messagesPerSec * 100) / metrics.viewerCount;
-    return Math.min(Math.round(base * 10) / 10, 100);
-  }
-
-  function exportAnalytics(format: "csv" | "json") {
-    const dataStr = JSON.stringify(metrics, null, 2);
-    if (format === "json") {
-      const blob = new Blob([dataStr], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `streamhub_analytics_${streamId || "export"}.json`;
-      link.click();
-      toast.success("Estatísticas exportadas em JSON! 📊");
-    } else {
-      const csvContent = "data:text/csv;charset=utf-8," 
-        + "Viewer Count,Peak Viewers,Messages/Sec,Avg Chatters,Followers Today\n"
-        + `${metrics.viewerCount},${metrics.peakViewers},${metrics.messagesPerSec},${metrics.avgChatters},${metrics.followersToday}`;
-      const encodedUri = encodeURI(csvContent);
-      const link = document.createElement("a");
-      link.setAttribute("href", encodedUri);
-      link.setAttribute("download", `streamhub_analytics_${streamId || "export"}.csv`);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      toast.success("Estatísticas exportadas em CSV! 📊");
-    }
-  }
+  const viewerTrend = state.currentStream?.viewerHistory.slice(-20) ?? [];
+  const aggregatedStats = getAggregatedStats();
 
   return {
-    metrics,
-    isLoading,
-    calculateEngagement,
-    exportAnalytics,
+    ...state,
+    viewerTrend,
+    aggregatedStats,
+    startRealtime,
+    stopRealtime,
+    fetchHistory,
+    getStreamReport,
+    getTopMoments,
+    fetchCurrentAnalytics,
   };
 }

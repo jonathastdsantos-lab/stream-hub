@@ -1,7 +1,16 @@
 import React from "react";
 import { MessageSquare, Send, EyeOff, Eye, UserX, AlertTriangle, Link } from "lucide-react";
 import { G, PLATFORMS, pColor, PlatformId } from "./constants";
-import { ChatMsg } from "../../lib/stores/chat.store";
+export interface ChatMsg {
+  id: string;
+  platform: PlatformId;
+  user: string;
+  msg: string;
+  time: string;
+  spamAlert?: boolean;
+  linkAlert?: boolean;
+  hidden?: boolean;
+}
 
 interface ChatTabProps {
   live: boolean;
